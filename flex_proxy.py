@@ -67,7 +67,7 @@ try:
                     except:
                         print("Client disconnected")
                     clients.remove(s)
-except KeyboardInterrupt:
+except:
     print("\nExiting...")
     for s in clients:
         s.close()
