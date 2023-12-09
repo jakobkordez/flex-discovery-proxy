@@ -1,3 +1,5 @@
+#!/usr/bin/python3
+
 ######################################################
 #   FlexRadio discovery Proxy
 ######################################################
@@ -59,9 +61,12 @@ try:
                     data = None
                 if not data:
                     # A client socket has been disconnected
-                    print("Client disconnected:", s.getpeername())
+                    try:
+                        print("Client disconnected:", s.getpeername())
+                        s.close()
+                    except:
+                        print("Client disconnected")
                     clients.remove(s)
-                    s.close()
 except KeyboardInterrupt:
     print("\nExiting...")
     for s in clients:
