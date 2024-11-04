@@ -11,6 +11,12 @@
 #
 ######################################################
 
+# CONSTANTS
+# Set the default proxy server address and port
+SERVER = "192.168.1.100"
+PORT = 4996
+
+
 from socket import (
     socket,
     AF_INET,
@@ -21,76 +27,99 @@ from socket import (
     SO_BROADCAST,
 )
 from select import select
-import sys
-from argparse import ArgumentParser
-import re
-
-SERVER = "localhost"
-PORT = 4996
+import threading
+from time import time
 
 
-# Argument parsing
-serverRegex = r"^(?P<host>[^:]+)(:(?P<port>\d+))?$"
+class ConnectionThread(threading.Thread):
+    def __init__(self, server, port):
+        super(ConnectionThread, self).__init__()
+        self._stop_event = threading.Event()
+        self.server = server
+        self.port = port
 
-parser = ArgumentParser(
-    prog="FlexRadio discovery proxy client",
-    description="Connect to a FlexRadio discovery proxy and re-broadcast all received packets",
-    epilog="Author: Jakob Kordež, S52KJ",
-)
-parser.add_argument(
-    "server",
-    metavar="SERVER",
-    type=str,
-    nargs="?",
-    default=SERVER,
-    help="Server address (default: %(default)s)",
-)
+    def stop(self):
+        self._stop_event.set()
+        self.join()
 
-args = parser.parse_args()
-sp = re.fullmatch(serverRegex, args.server)
-if not sp:
-    print("Invalid server address")
-    sys.exit(1)
+    def isStopped(self):
+        return self._stop_event.is_set()
 
-SERVER = sp.group("host")
-if sp.group("port"):
-    PORT = int(sp.group("port"))
+    def run(self):
+        target = (self.server, self.port)
+
+        # Create broadcast socket
+        with socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) as broadcastSocket:
+            broadcastSocket.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
+
+            # Connect to TCP server
+            with socket(AF_INET, SOCK_STREAM) as s:
+                print("Connecting to server...", target)
+
+                # Try to connect to the server for 5 seconds
+                s.settimeout(5)
+                try:
+                    s.connect(target)
+                    print("Connected to server")
+                except (ConnectionRefusedError, TimeoutError):
+                    print("Connection timed out")
+                    return
+
+                s.setblocking(False)
+
+                while not self._stop_event.is_set():
+                    r = select([s], [], [], 1)[0]
+                    if len(r) == 0:
+                        continue
+
+                    payload = s.recv(2048)
+                    if not payload:
+                        print("Server disconnected")
+                        break
+
+                    # Re-broadcast discovery packet to local network
+                    print(f"\r{time()} Received discovery", end="")
+                    broadcastSocket.sendto(payload, ("255.255.255.255", 4992))
 
 
-# Create broadcast socket
-broadcastSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-broadcastSocket.setsockopt(SOL_SOCKET, SO_BROADCAST, 1)
+if __name__ == "__main__":
+    import sys
+    from argparse import ArgumentParser
+    import re
 
+    # Argument parsing
+    parser = ArgumentParser(
+        prog="client.py",
+        description="Connect to a FlexRadio discovery proxy and re-broadcast all received packets",
+        epilog="Author: Jakob Kordež, S52KJ",
+    )
+    parser.add_argument(
+        "server",
+        metavar="SERVER",
+        type=str,
+        nargs="?",
+        default=SERVER,
+        help="Proxy server address (default: %(default)s)",
+    )
 
-# Connect to TCP server
-with socket(AF_INET, SOCK_STREAM) as s:
-    s.settimeout(5)
-    print("Connecting to server...", (SERVER, PORT))
-
-    # Try to connect to the server for 5 seconds
-    try:
-        s.connect((SERVER, PORT))
-        print("Connected to server")
-        print("\nPress Ctrl+C to exit...")
-    except (ConnectionRefusedError, TimeoutError):
-        print("Connection timed out")
-        input("\nPress enter to exit...")
+    args = parser.parse_args()
+    sp = re.fullmatch(r"^(?P<host>[^:]+)(:(?P<port>\d+))?$", args.server)
+    if not sp:
+        print("Invalid server address")
         sys.exit(1)
 
-    s.setblocking(False)
+    SERVER = sp.group("host")
+    if sp.group("port"):
+        PORT = int(sp.group("port"))
 
+    # Start the connection thread
+    thread = ConnectionThread(SERVER, PORT)
+    thread.start()
     try:
         while True:
-            r = select([s], [], [], 1)[0]
-            if len(r) == 0:
-                continue
-
-            payload = s.recv(2048)
-            if not payload:
-                print("Server disconnected")
-                break
-
-            broadcastSocket.sendto(payload, ("255.255.255.255", 4992))
+            thread.join(1)
     except KeyboardInterrupt:
-        print("\nExiting...")
-        sys.exit(0)
+        print("\nKeyboard interrupt")
+        thread.stop()
+    print("Exiting...")
+    sys.exit(0)
